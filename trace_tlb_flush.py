@@ -9,10 +9,22 @@
 #
 from bcc import BPF
 import socket, time, os, sys
+import argparse
 BOOT2EPOCH_NS = time.time_ns() - time.monotonic_ns()   # << NEW
 
 # ──────────────────────────────────── User settings ──────────────────────────
 UDP_ADDR = ("127.0.0.1", 8089)  # Telegraf [[inputs.socket_listener]]
+
+# ──────────────────────────────────── CLI args ──────────────────────────
+parser = argparse.ArgumentParser(description="Trace tlb_flush events for a single program")
+parser.add_argument('-p', '--prog',
+                    help="Only track events where comm == PROG (exact match)")
+parser.add_argument('-v', '--verbose',
+                    action='store_true',
+                    help="Print pretty and raw line-protocol to console")
+args = parser.parse_args()
+
+print("Tracing tlb_flush events for program:", args.prog if args.prog else "all")
 
 # ──────────────────────────── UDP helper + escaping ─────────────────────────-
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -81,12 +93,22 @@ def handle_event(ctx, data, size):
     if start_ns is None:
         start_ns = e.ts
     rel = (e.ts - start_ns) / 1e9
-    print(fmt.format(rel, e.cpu, e.reason,
-                     reason_lookup.get(e.reason, "UNKNOWN")),
-          e.comm.decode(errors="replace").rstrip("\0"))
-
-    # ─── build Influx Line Protocol record ──────────────────────────────────
     comm = e.comm.decode(errors="replace").rstrip("\0") or "unknown"
+
+    # If the program name is set, filter by it's prefix value
+    # if args.prog and not comm.startswith(args.prog):
+    #     return
+
+    if args.prog and not args.prog.startswith(comm):
+        # filter by program name if requested
+        return
+
+    if args.verbose:
+        print(fmt.format(rel, e.cpu, e.reason,
+                         reason_lookup.get(e.reason, "UNKNOWN")),
+              comm)
+        
+    # ─── build Influx Line Protocol record ──────────────────────────────────
 
     tagset   = f"cpu={e.cpu},comm={esc_tag(comm)}"
     fieldset = (
